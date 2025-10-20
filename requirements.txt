@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+joblib
+rapidfuzz
+nltk
+easyocr
+pillow
+scikit-learn
+xgboost
+google-generativeai
+openpyxl
+catboost
