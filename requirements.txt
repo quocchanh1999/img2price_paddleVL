@@ -11,3 +11,6 @@ xgboost
 google-generativeai
 openpyxl
 catboost
+paddlepaddle
+paddleocr[doc-parser]
+safetensors
