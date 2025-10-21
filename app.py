@@ -46,7 +46,7 @@ def initialize_tools():
     except LookupError:
         nltk.download('punkt')
     stemmer = SnowballStemmer("english")
-    pipeline = PaddleOCRVL(device='cpu', lang='multilingual')  # Use CPU, lang='en' (test 'vi' if supported)
+    pipeline = PaddleOCRVL(device='cpu')  # Use CPU, lang='en' (test 'vi' if supported)
     return stemmer, pipeline
 
 stemmer, ocr_pipeline = initialize_tools()
