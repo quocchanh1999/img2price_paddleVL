@@ -7,13 +7,15 @@ from rapidfuzz import process, fuzz
 import unicodedata
 import nltk
 from nltk.stem.snowball import SnowballStemmer
-import easyocr
 from PIL import Image
 import io
 import asyncio
 import sys
 import google.generativeai as genai
 import os
+import subprocess
+import tempfile
+from paddleocr import PaddleOCRVL
 
 class LogScaler:
     def transform(self, x):
@@ -28,6 +30,15 @@ if sys.platform.startswith("win"):
 
 st.set_page_config(layout="centered", page_title="Dự đoán Giá thuốc")
 
+# Step 1: Install dependencies for PaddleOCR-VL
+with st.spinner("Đang cài đặt PaddlePaddle và PaddleOCR-VL..."):
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "paddlepaddle"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "paddleocr[doc-parser]"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "safetensors"])
+    except subprocess.CalledProcessError as e:
+        st.stop()
+
 @st.cache_resource
 def initialize_tools():
     try:
@@ -35,10 +46,10 @@ def initialize_tools():
     except LookupError:
         nltk.download('punkt')
     stemmer = SnowballStemmer("english")
-    reader = easyocr.Reader(['vi', 'en'], gpu=False)
-    return stemmer, reader
+    pipeline = PaddleOCRVL(device='cpu', lang='multilingual')  # Use CPU, lang='en' (test 'vi' if supported)
+    return stemmer, pipeline
 
-stemmer, ocr_reader = initialize_tools()
+stemmer, ocr_pipeline = initialize_tools()
 
 @st.cache_resource
 def load_artifacts():
@@ -49,7 +60,6 @@ def load_artifacts():
         scaler_giaThanh = joblib.load(os.path.join(BASE_DIR, "scaler_giaThanh.joblib"))
         scaler_giaBanBuon = joblib.load(os.path.join(BASE_DIR, "scaler_giaBanBuon.joblib"))
         train_cols = joblib.load(os.path.join(BASE_DIR, "train_cols.joblib"))
-        # Remove duplicates from train_cols
         train_cols = list(dict.fromkeys(train_cols))
         df_full = pd.read_excel(os.path.join(BASE_DIR, "dichvucong_medicines_Final.xlsx"))
         return model_giaThanh, model_giaBanBuon, imputer, scaler_giaThanh, scaler_giaBanBuon, train_cols, df_full
@@ -431,12 +441,28 @@ if df_full is not None:
     if uploaded_file is not None:
         image_bytes = uploaded_file.getvalue()
         st.image(uploaded_file, use_container_width=True)
-        with st.spinner("Đang đọc ảnh..."):
-            ocr_text = " ".join(ocr_reader.readtext(image_bytes, detail=0))
+        with st.spinner("Đang đọc ảnh với PaddleOCR-VL..."):
+            # Save image to temporary file since PaddleOCR-VL requires a file path
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
+                tmp_file.write(image_bytes)
+                tmp_path = tmp_file.name
+            try:
+                output = ocr_pipeline.predict(tmp_path)
+                ocr_text = ""
+                for res in output:
+                    # Extract text from markdown_texts, fallback to raw text if needed
+                    if hasattr(res, 'markdown') and 'markdown_texts' in res.markdown:
+                        ocr_text += res.markdown['markdown_texts'] + "\n\n"
+                    else:
+                        ocr_text += str(res) + "\n\n"  # Fallback to string representation
+                os.unlink(tmp_path)  # Clean up temp file
+            except Exception as e:
+                st.error(f"Lỗi OCR với PaddleOCR-VL: {e}. Có thể không hỗ trợ CPU đầy đủ.")
+                st.stop()
         query_to_process = ocr_text
         source = "ocr"
-        with st.expander("Xem toàn bộ văn bản nhận dạng được"):
-            st.text_area("", ocr_text, height=150)
+        with st.expander("Xem toàn bộ văn bản nhận dạng được (Markdown)"):
+            st.markdown(ocr_text)
     elif user_query_text:
         query_to_process = user_query_text
 
@@ -486,7 +512,6 @@ if df_full is not None:
                 best_match, score, _ = process.extractOne(ten_thuoc, choices, scorer=fuzz.ratio) if ten_thuoc else (None, 0, None)
 
                 if best_match and score >= 95:
-                    # Direct match based on tenThuoc
                     drug_info_row = df_full[df_full['tenThuoc'] == best_match].iloc[0]
                     st.markdown(f"**Phương thức:** `Levenshtein Distance (Thuốc: {best_match}, độ tương đồng: {score:.0f}%)`")
                     gia_kk = drug_info_row['giaBanBuonDuKien'] * quantity
@@ -503,14 +528,12 @@ if df_full is not None:
                     total_gia_kk += gia_kk if pd.notna(gia_kk) else 0.0
                     total_gia_tt += gia_tt
                 else:
-                    # Step 2: Compare tenThuoc + hoatChat (>= 90%)
                     search_key = f"{ten_thuoc} {hoat_chat}".strip()
                     choices_combined = (df_full['tenThuoc'].fillna('') + ' ' + df_full['hoatChat'].fillna('')).str.strip().tolist()
                     best_match, score, idx = process.extractOne(search_key, choices_combined, scorer=fuzz.ratio) if search_key else (None, 0, None)
 
                     if best_match and score >= 90:
                         drug_info_row = df_full.iloc[idx]
-                        # Check if dosage differs for extrapolation
                         can_extrapolate = False
                         if pd.notna(parsed_info.get('hamLuong')) and pd.notna(drug_info_row.get('hamLuong')):
                             user_dosage_mg = parse_dosage_value(parsed_info.get('hamLuong'))
@@ -538,7 +561,6 @@ if df_full is not None:
                             total_gia_kk += gia_kk_extrapolated if pd.notna(gia_kk_base) else 0.0
                             total_gia_tt += gia_tt_extrapolated
                         else:
-                            # Direct match based on tenThuoc + hoatChat
                             st.markdown(f"**Phương thức:** `Levenshtein Distance (Thuốc: {drug_info_row['tenThuoc']}, độ tương đồng: {score:.0f}%)`")
                             gia_kk = drug_info_row['giaBanBuonDuKien'] * quantity
                             gia_tt = drug_info_row.get('giaThanh', np.nan) * quantity if pd.notna(drug_info_row.get('giaThanh')) else 0.0
@@ -554,7 +576,6 @@ if df_full is not None:
                             total_gia_kk += gia_kk if pd.notna(gia_kk) else 0.0
                             total_gia_tt += gia_tt
                     else:
-                        # Use CatBoost Regressor
                         st.markdown(f"**Phương thức:** `CatBoost Regressor`")
                         st.caption(f"Sử dụng thông tin bổ sung (nhà SX, nước SX, Dạng bào chế...) từ thuốc tương tự nhất: *{best_match or 'N/A'}*")
                         hybrid_data = {
