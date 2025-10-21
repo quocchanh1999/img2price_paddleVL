@@ -18,7 +18,6 @@ import os
 class LogScaler:
     def transform(self, x):
         return np.log1p(x)
-
     def inverse_transform(self, x):
         return np.expm1(x)
 
@@ -60,7 +59,7 @@ def load_artifacts():
 
 model_giaThanh, model_giaBanBuon, imputer, scaler_giaThanh, scaler_giaBanBuon, train_cols, df_full = load_artifacts()
 
-categorical_cols = ['doanhNghiepSanXuat', 'nuocSanXuat', 'dangBaoChe_final', 'hoat_chat_chinh', 'loaiDongGoiChinh', 'donViCoSo']
+categorical_cols = ['doanhNghiepSanXuat', 'nuocSanXuat', 'dangBaoChe_final', 'hoat_chat_chinh', 'loaiDongGoiChinh', 'donViCoSo', 'is_low_price']
 
 REPLACEMENTS_DNSX = {
     'ctcp': 'công ty cổ phần', 'tnhh': 'trách nhiệm hữu hạn', 'dp': 'dược phẩm', 'tw': 'trung ương',
@@ -258,6 +257,9 @@ def transform_hybrid_data(hybrid_data, train_cols, categorical_cols, imputer):
     df = pd.DataFrame([hybrid_data])
     df['doanhNghiepSanXuat'] = df['doanhNghiepSanXuat'].replace(['', 'nan', None], np.nan).fillna('missing').astype(str)
     df['nuocSanXuat'] = df['nuocSanXuat'].replace(['', 'nan', None], np.nan).fillna('missing').astype(str)
+    df['is_low_price'] = 0
+    if 'giaBanBuonDuKien' in df.columns:
+        df['is_low_price'] = (pd.to_numeric(df['giaBanBuonDuKien'], errors='coerce') < 500).astype(int)
     pack_features = df['quyCachDongGoi'].apply(extract_quantity)
     df = pd.concat([df, pack_features], axis=1)
     df['tongHamLuong_mg'] = df['hamLuong'].apply(normalize_hamluong_to_mg)
@@ -275,9 +277,7 @@ def transform_hybrid_data(hybrid_data, train_cols, categorical_cols, imputer):
     df['hamluong_so_luong'] = df['tongHamLuong_mg'] * df['mean_so_luong']
     df['gia_per_unit'] = df['tongHamLuong_mg'] / df['mean_so_luong'].replace(0, 1)
     df = df.drop(columns=['tenThuoc', 'hoatChat', 'hamLuong', 'quyCachDongGoi', 'dangBaoChe', 'soLuong', 'donViTinh'], errors='ignore')
-    # Ensure no duplicate columns in df
     df = df.loc[:, ~df.columns.duplicated()]
-    # Reindex to match train_cols, filling missing columns with NaN
     missing_cols = [col for col in train_cols if col not in df.columns]
     for col in missing_cols:
         df[col] = np.nan
@@ -461,19 +461,16 @@ if df_full is not None:
         total_gia_tt = 0.0
         price_details = []
 
-          
-        # Trong vòng lặp xử lý lines_to_process
         for i, parsed_info in enumerate(lines_to_process):
-            # Lấy tenThuoc và hoatChat, xử lý np.nan giống pipeline cũ
             ten_thuoc = parsed_info.get('tenThuoc', '').strip() if pd.notna(parsed_info.get('tenThuoc')) else ''
             hoat_chat = parsed_info.get('hoatChat', '').strip() if pd.notna(parsed_info.get('hoatChat')) else ''
             if not ten_thuoc and not hoat_chat:
                 continue
-        
+
             valid_drug_count += 1
             if len(lines_to_process) > 1:
                 st.markdown(f"--- \n ### 💊 Kết quả cho đơn thuốc {valid_drug_count}")
-        
+
             with st.spinner(f"Đang xử lý: '{(ten_thuoc or hoat_chat)[:50]}...'"):
                 st.markdown(f"**Tên thuốc:** {parsed_info.get('tenThuoc') or '(Chưa xác định)'}")
                 st.markdown(f"**Hoạt chất:** {parsed_info.get('hoatChat') or '(Chưa xác định)'}")
@@ -481,13 +478,13 @@ if df_full is not None:
                 st.markdown(f"**Số lượng:** {parsed_info.get('soLuong') or 'N/A'}")
                 st.markdown(f"**Đơn vị tính:** {parsed_info.get('donViTinh') or 'N/A'}")
                 st.markdown("---")
-        
+
                 quantity = float(parsed_info.get('soLuong', '1')) if parsed_info.get('soLuong') and parsed_info.get('soLuong') != 'N/A' else 1.0
-        
+
                 # Step 1: Compare tenThuoc only (>= 95%)
                 choices = df_full['tenThuoc'].dropna().tolist()
                 best_match, score, _ = process.extractOne(ten_thuoc, choices, scorer=fuzz.ratio) if ten_thuoc else (None, 0, None)
-        
+
                 if best_match and score >= 95:
                     # Direct match based on tenThuoc
                     drug_info_row = df_full[df_full['tenThuoc'] == best_match].iloc[0]
@@ -510,7 +507,7 @@ if df_full is not None:
                     search_key = f"{ten_thuoc} {hoat_chat}".strip()
                     choices_combined = (df_full['tenThuoc'].fillna('') + ' ' + df_full['hoatChat'].fillna('')).str.strip().tolist()
                     best_match, score, idx = process.extractOne(search_key, choices_combined, scorer=fuzz.ratio) if search_key else (None, 0, None)
-        
+
                     if best_match and score >= 90:
                         drug_info_row = df_full.iloc[idx]
                         # Check if dosage differs for extrapolation
@@ -520,7 +517,7 @@ if df_full is not None:
                             db_dosage_mg = parse_dosage_value(drug_info_row.get('hamLuong'))
                             if user_dosage_mg > 0 and db_dosage_mg > 0 and user_dosage_mg != db_dosage_mg:
                                 can_extrapolate = True
-        
+
                         if can_extrapolate:
                             ratio = user_dosage_mg / db_dosage_mg
                             st.markdown(f"**Phương thức:** `Extrapolation by Dosage (Tỷ lệ: {ratio:.2f}x)`")
