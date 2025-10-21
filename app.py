@@ -15,6 +15,13 @@ import sys
 import google.generativeai as genai
 import os
 
+class LogScaler:
+    def transform(self, x):
+        return np.log1p(x)
+
+    def inverse_transform(self, x):
+        return np.expm1(x)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 if sys.platform.startswith("win"):
