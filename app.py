@@ -30,19 +30,6 @@ if sys.platform.startswith("win"):
 st.set_page_config(layout="centered", page_title="Dự đoán Giá thuốc")
 
 @st.cache_resource
-def initialize_tools():
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt')
-    stemmer = SnowballStemmer("english")
-    # Initialize DocTR predictor
-    predictor = ocr_predictor(pretrained=True)
-    return stemmer, predictor
-
-stemmer, ocr_predictor = initialize_tools()
-
-@st.cache_resource
 def load_artifacts():
     try:
         model_giaThanh = joblib.load(os.path.join(BASE_DIR, "final_model_giaThanh.joblib"))
@@ -438,7 +425,11 @@ if df_full is not None:
             # Use DocTR for OCR
             doc = DocumentFile.from_images(image_bytes)
             result = ocr_predictor(doc)
-            ocr_text = " ".join([block['value'] for page in result.export()['pages'] for block in page['blocks']])
+            # Extract text from words in lines in blocks
+            ocr_text = " ".join([word['value'] for page in result.export()['pages'] 
+                               for block in page['blocks'] 
+                               for line in block['lines'] 
+                               for word in line['words']])
         query_to_process = ocr_text
         source = "ocr"
         with st.expander("Xem toàn bộ văn bản nhận dạng được"):
