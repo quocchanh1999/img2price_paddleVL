@@ -14,3 +14,4 @@ catboost
 paddlepaddle
 paddleocr[doc-parser]
 safetensors
+python-doctr[torch]
