@@ -7,10 +7,6 @@ from rapidfuzz import process, fuzz
 import unicodedata
 import nltk
 from nltk.stem.snowball import SnowballStemmer
-
-os.system("pip install numpy==1.26.4 opencv-python-headless==4.9.0.80 --force-reinstall --quiet")
-import importlib
-importlib.reload(sys.modules.get('numpy', None))
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
 from PIL import Image
