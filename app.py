@@ -7,8 +7,6 @@ from rapidfuzz import process, fuzz
 import unicodedata
 import nltk
 from nltk.stem.snowball import SnowballStemmer
-import sys
-sys.modules['paddlex'] = None 
 from paddleocr import PaddleOCR
 import threading
 from PIL import Image
@@ -40,15 +38,12 @@ def initialize_tools():
         nltk.data.find('tokenizers/punkt')
     except LookupError:
         nltk.download('punkt')
-
     stemmer = SnowballStemmer("english")
+    reader_vi = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False)
+    reader_en = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+    return stemmer, reader_vi, reader_en
 
-    ocr_vi = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False, show_log=False)
-    ocr_en = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False)
-
-    return stemmer, ocr_vi, ocr_en
-
-stemmer, ocr_vi, ocr_en = initialize_tools()
+stemmer, ocr_reader_vi, ocr_reader_en = initialize_tools()
 
 @st.cache_resource
 def load_artifacts():
@@ -398,51 +393,32 @@ def parse_gemini_response(response_text):
 st.title("Gợi ý Giá thuốc")
 
 if df_full is not None:
-    user_query_text = st.text_input(
-        "",
-        placeholder="Nhập tên thuốc, ví dụ tên thuốc (hoạt chất) hàm lượng số lượng...",
-        label_visibility="collapsed"
-    )
-    uploaded_file = st.file_uploader(
-        "",
-        type=["png", "jpg", "jpeg"],
-        label_visibility="collapsed"
-    )
-
+    user_query_text = st.text_input("", placeholder="Nhập tên thuốc, ví dụ tên thuốc (hoạt chất) hàm lượng số lượng...", label_visibility="collapsed")
+    uploaded_file = st.file_uploader("", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
     query_to_process = None
     source = "text"
-
     if uploaded_file is not None:
         image_bytes = uploaded_file.getvalue()
         st.image(uploaded_file, use_container_width=True)
-        with st.spinner("Đang đọc ảnh..."):
-            text_vi = None
-            text_en = None
-    
-            def ocr_vi():
-                nonlocal_text = " ".join(ocr_reader_vi.readtext(image_bytes, detail=0))
-                nonlocal_vars["text_vi"] = nonlocal_text
-    
-            def ocr_en():
-                nonlocal_text = " ".join(ocr_reader_en.readtext(image_bytes, detail=0))
-                nonlocal_vars["text_en"] = nonlocal_text
-    
-            nonlocal_vars = {}
-            t1 = threading.Thread(target=ocr_vi)
-            t2 = threading.Thread(target=ocr_en)
-            t1.start()
-            t2.start()
-            t1.join()
-            t2.join()
-    
-            ocr_text = f"{nonlocal_vars.get('text_vi', '')} {nonlocal_vars.get('text_en', '')}"
-
+        with st.spinner("Đang đọc ảnh với OCR song song (Vi/En)..."):
+            image = Image.open(io.BytesIO(image_bytes))
+            img_np = np.array(image)
+            result_vi = ocr_reader_vi.ocr(img_np, cls=True)
+            result_en = ocr_reader_en.ocr(img_np, cls=True)
+            texts = set()
+            if result_vi and result_vi[0] is not None:
+                for line in result_vi[0]:
+                    texts.add(line[1][0])
+            if result_en and result_en[0] is not None:
+                for line in result_en[0]:
+                    texts.add(line[1][0])
+            ocr_text = " ".join(texts)
+        if not ocr_text.strip():
+            st.warning("Không nhận dạng được văn bản từ ảnh. Hãy thử ảnh rõ nét hơn.")
         query_to_process = ocr_text
         source = "ocr"
-
         with st.expander("Xem toàn bộ văn bản nhận dạng được"):
             st.text_area("", ocr_text, height=150)
-
     elif user_query_text:
         query_to_process = user_query_text
 
