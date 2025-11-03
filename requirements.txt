@@ -12,7 +12,5 @@ google-generativeai
 openpyxl
 catboost
 paddlepaddle
-paddleocr[doc-parser]
+paddleocr
 safetensors
-python-doctr[torch]
-opencv-python-headless==4.9.0.80
