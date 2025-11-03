@@ -4,7 +4,6 @@ numpy
 joblib
 rapidfuzz
 nltk
-easyocr
 pillow
 scikit-learn
 xgboost
