@@ -13,4 +13,6 @@ openpyxl
 catboost
 paddlepaddle
 paddleocr
+opencv-python-headless
+libgl1-mesa-glx==21.2.6
 safetensors
