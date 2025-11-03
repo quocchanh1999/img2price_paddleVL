@@ -7,7 +7,11 @@ from rapidfuzz import process, fuzz
 import unicodedata
 import nltk
 from nltk.stem.snowball import SnowballStemmer
-import easyocr
+from paddleocr import PaddleOCR
+import threading
+from PIL import Image
+import numpy as np
+import io
 from PIL import Image
 import io
 import asyncio
@@ -34,11 +38,15 @@ def initialize_tools():
         nltk.data.find('tokenizers/punkt')
     except LookupError:
         nltk.download('punkt')
-    stemmer = SnowballStemmer("english")
-    reader = easyocr.Reader(['vi', 'en'], gpu=False)
-    return stemmer, reader
 
-stemmer, ocr_reader = initialize_tools()
+    stemmer = SnowballStemmer("english")
+
+    ocr_vi = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False, show_log=False)
+    ocr_en = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False)
+
+    return stemmer, ocr_vi, ocr_en
+
+stemmer, ocr_vi, ocr_en = initialize_tools()
 
 @st.cache_resource
 def load_artifacts():
@@ -388,8 +396,16 @@ def parse_gemini_response(response_text):
 st.title("Gợi ý Giá thuốc")
 
 if df_full is not None:
-    user_query_text = st.text_input("", placeholder="Nhập tên thuốc, ví dụ tên thuốc (hoạt chất) hàm lượng số lượng...", label_visibility="collapsed")
-    uploaded_file = st.file_uploader("", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+    user_query_text = st.text_input(
+        "",
+        placeholder="Nhập tên thuốc, ví dụ tên thuốc (hoạt chất) hàm lượng số lượng...",
+        label_visibility="collapsed"
+    )
+    uploaded_file = st.file_uploader(
+        "",
+        type=["png", "jpg", "jpeg"],
+        label_visibility="collapsed"
+    )
 
     query_to_process = None
     source = "text"
@@ -397,12 +413,38 @@ if df_full is not None:
     if uploaded_file is not None:
         image_bytes = uploaded_file.getvalue()
         st.image(uploaded_file, use_container_width=True)
-        with st.spinner("Đang đọc ảnh..."):
-            ocr_text = " ".join(ocr_reader.readtext(image_bytes, detail=0))
+
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        img_np = np.array(image)
+
+        text_vi, text_en = "", ""
+
+        def run_vi():
+            nonlocal text_vi
+            result_vi = ocr_vi.ocr(img_np, cls=True)
+            text_vi = " ".join([line[1][0] for block in result_vi for line in block])
+
+        def run_en():
+            nonlocal text_en
+            result_en = ocr_en.ocr(img_np, cls=True)
+            text_en = " ".join([line[1][0] for block in result_en for line in block])
+
+        with st.spinner("Đang đọc ảnh (VI + EN)..."):
+            t1 = threading.Thread(target=run_vi)
+            t2 = threading.Thread(target=run_en)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        ocr_text = f"{text_vi} {text_en}".strip()
+
         query_to_process = ocr_text
         source = "ocr"
+
         with st.expander("Xem toàn bộ văn bản nhận dạng được"):
             st.text_area("", ocr_text, height=150)
+
     elif user_query_text:
         query_to_process = user_query_text
 
