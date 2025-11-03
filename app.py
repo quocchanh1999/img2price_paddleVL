@@ -7,6 +7,8 @@ from rapidfuzz import process, fuzz
 import unicodedata
 import nltk
 from nltk.stem.snowball import SnowballStemmer
+import sys
+sys.modules['paddlex'] = None 
 from paddleocr import PaddleOCR
 import threading
 from PIL import Image
