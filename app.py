@@ -413,31 +413,27 @@ if df_full is not None:
     if uploaded_file is not None:
         image_bytes = uploaded_file.getvalue()
         st.image(uploaded_file, use_container_width=True)
-
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        img_np = np.array(image)
-
-        text_vi, text_en = "", ""
-
-        def run_vi():
-            nonlocal text_vi
-            result_vi = ocr_vi.ocr(img_np, cls=True)
-            text_vi = " ".join([line[1][0] for block in result_vi for line in block])
-
-        def run_en():
-            nonlocal text_en
-            result_en = ocr_en.ocr(img_np, cls=True)
-            text_en = " ".join([line[1][0] for block in result_en for line in block])
-
-        with st.spinner("Đang đọc ảnh (VI + EN)..."):
-            t1 = threading.Thread(target=run_vi)
-            t2 = threading.Thread(target=run_en)
+        with st.spinner("Đang đọc ảnh..."):
+            text_vi = None
+            text_en = None
+    
+            def ocr_vi():
+                nonlocal_text = " ".join(ocr_reader_vi.readtext(image_bytes, detail=0))
+                nonlocal_vars["text_vi"] = nonlocal_text
+    
+            def ocr_en():
+                nonlocal_text = " ".join(ocr_reader_en.readtext(image_bytes, detail=0))
+                nonlocal_vars["text_en"] = nonlocal_text
+    
+            nonlocal_vars = {}
+            t1 = threading.Thread(target=ocr_vi)
+            t2 = threading.Thread(target=ocr_en)
             t1.start()
             t2.start()
             t1.join()
             t2.join()
-
-        ocr_text = f"{text_vi} {text_en}".strip()
+    
+            ocr_text = f"{nonlocal_vars.get('text_vi', '')} {nonlocal_vars.get('text_en', '')}"
 
         query_to_process = ocr_text
         source = "ocr"
