@@ -7,8 +7,7 @@ from rapidfuzz import process, fuzz
 import unicodedata
 import nltk
 from nltk.stem.snowball import SnowballStemmer
-from doctr.io import DocumentFile
-from doctr.models import ocr_predictor
+import easyocr
 from PIL import Image
 import io
 import asyncio
@@ -30,6 +29,18 @@ if sys.platform.startswith("win"):
 st.set_page_config(layout="centered", page_title="Dự đoán Giá thuốc")
 
 @st.cache_resource
+def initialize_tools():
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    stemmer = SnowballStemmer("english")
+    reader = easyocr.Reader(['vi', 'en'], gpu=False)
+    return stemmer, reader
+
+stemmer, ocr_reader = initialize_tools()
+
+@st.cache_resource
 def load_artifacts():
     try:
         model_giaThanh = joblib.load(os.path.join(BASE_DIR, "final_model_giaThanh.joblib"))
@@ -38,7 +49,6 @@ def load_artifacts():
         scaler_giaThanh = joblib.load(os.path.join(BASE_DIR, "scaler_giaThanh.joblib"))
         scaler_giaBanBuon = joblib.load(os.path.join(BASE_DIR, "scaler_giaBanBuon.joblib"))
         train_cols = joblib.load(os.path.join(BASE_DIR, "train_cols.joblib"))
-        # Remove duplicates from train_cols
         train_cols = list(dict.fromkeys(train_cols))
         df_full = pd.read_excel(os.path.join(BASE_DIR, "dichvucong_medicines_Final.xlsx"))
         return model_giaThanh, model_giaBanBuon, imputer, scaler_giaThanh, scaler_giaBanBuon, train_cols, df_full
@@ -48,8 +58,7 @@ def load_artifacts():
 
 model_giaThanh, model_giaBanBuon, imputer, scaler_giaThanh, scaler_giaBanBuon, train_cols, df_full = load_artifacts()
 
-# Modified: Added 'is_low_price' to categorical_cols to match training code
-categorical_cols = ['doanhNghiepSanXuat', 'nuocSanXuat', 'dangBaoChe_final', 'hoat_chat_chinh', 'loaiDongGoiChinh', 'donViCoSo', 'is_low_price']
+categorical_cols = ['doanhNghiepSanXuat', 'nuocSanXuat', 'dangBaoChe_final', 'hoat_chat_chinh', 'loaiDongGoiChinh', 'donViCoSo']
 
 REPLACEMENTS_DNSX = {
     'ctcp': 'công ty cổ phần', 'tnhh': 'trách nhiệm hữu hạn', 'dp': 'dược phẩm', 'tw': 'trung ương',
@@ -133,31 +142,6 @@ def classify_dangBaoChe_final(text):
         if any(re.search(r'\b' + re.escape(keyword) + r'\b', s) for keyword in keywords):
             return standard_form
     return 'Khác (Chưa phân loại)'
-
-def extract_quantity(text):
-    if pd.isnull(text):
-        return pd.Series([1.0, 1.0, 1.0, 1], index=['min_so_luong', 'max_so_luong', 'mean_so_luong', 'num_pack_options'])
-    patterns = re.compile(r'[;,]\s*|\s*(?:hoặc|or)\s*', re.IGNORECASE)
-    packs = [p.strip() for p in patterns.split(str(text)) if p.strip()]
-    quantities = []
-    for pack in packs:
-        numbers = re.findall(r'(\d+\.?\d*)\s*(viên|ml|g|ống|nang|gói|túi|tuýp|chai|lọ)', pack, re.IGNORECASE)
-        if not numbers:
-            numbers = re.findall(r'(\d+\.?\d*)', pack)
-            if not numbers:
-                continue
-        total = 1.0
-        if isinstance(numbers[0], tuple):
-            for num, unit in numbers:
-                total *= float(num)
-        else:
-            for num in numbers:
-                total *= float(num)
-        quantities.append(total)
-    if not quantities:
-        quantities = [1.0]
-    return pd.Series([min(quantities), max(quantities), np.mean(quantities), len(quantities)],
-                     index=['min_so_luong', 'max_so_luong', 'mean_so_luong', 'num_pack_options'])
 
 ULTIMATE_UNIT_CONVERSION_MAP = {
     'kg': 1_000_000, 'g': 1_000, 'mg': 1, 'mcg': 0.001, 'µg': 0.001, 'ml': 1_000, 'l': 1_000_000
@@ -247,11 +231,6 @@ def transform_hybrid_data(hybrid_data, train_cols, categorical_cols, imputer):
     df = pd.DataFrame([hybrid_data])
     df['doanhNghiepSanXuat'] = df['doanhNghiepSanXuat'].replace(['', 'nan', None], np.nan).fillna('missing').astype(str)
     df['nuocSanXuat'] = df['nuocSanXuat'].replace(['', 'nan', None], np.nan).fillna('missing').astype(str)
-    df['is_low_price'] = 0
-    if 'giaBanBuonDuKien' in df.columns:
-        df['is_low_price'] = (pd.to_numeric(df['giaBanBuonDuKien'], errors='coerce') < 500).astype(int)
-    pack_features = df['quyCachDongGoi'].apply(extract_quantity)
-    df = pd.concat([df, pack_features], axis=1)
     df['tongHamLuong_mg'] = df['hamLuong'].apply(normalize_hamluong_to_mg)
     df['loaiDongGoiChinh'] = df['quyCachDongGoi'].apply(get_packaging_type)
     df['donViCoSo'] = df['quyCachDongGoi'].apply(get_base_unit)
@@ -263,10 +242,7 @@ def transform_hybrid_data(hybrid_data, train_cols, categorical_cols, imputer):
     df['hl_chinh_mg'].fillna(0, inplace=True)
     df['tong_hl_phu_mg'].fillna(0, inplace=True)
     df['tong_hl_iu'].fillna(0, inplace=True)
-    df['has_multiple_packs'] = (df['num_pack_options'] > 1).astype(int)
-    df['hamluong_so_luong'] = df['tongHamLuong_mg'] * df['mean_so_luong']
-    df['gia_per_unit'] = df['tongHamLuong_mg'] / df['mean_so_luong'].replace(0, 1)
-    df = df.drop(columns=['tenThuoc', 'hoatChat', 'hamLuong', 'quyCachDongGoi', 'dangBaoChe', 'soLuong', 'donViTinh'], errors='ignore')
+    df = df.drop(columns=['tenThuoc', 'hoatChat', 'hamLuong', 'quyCachDongGoi', 'soLuong', 'donViTinh'], errors='ignore')
     df = df.loc[:, ~df.columns.duplicated()]
     missing_cols = [col for col in train_cols if col not in df.columns]
     for col in missing_cols:
@@ -422,14 +398,7 @@ if df_full is not None:
         image_bytes = uploaded_file.getvalue()
         st.image(uploaded_file, use_container_width=True)
         with st.spinner("Đang đọc ảnh..."):
-            # Use DocTR for OCR
-            doc = DocumentFile.from_images(image_bytes)
-            result = ocr_predictor(doc)
-            # Extract text from words in lines in blocks
-            ocr_text = " ".join([word['value'] for page in result.export()['pages'] 
-                               for block in page['blocks'] 
-                               for line in block['lines'] 
-                               for word in line['words']])
+            ocr_text = " ".join(ocr_reader.readtext(image_bytes, detail=0))
         query_to_process = ocr_text
         source = "ocr"
         with st.expander("Xem toàn bộ văn bản nhận dạng được"):
@@ -478,12 +447,10 @@ if df_full is not None:
 
                 quantity = float(parsed_info.get('soLuong', '1')) if parsed_info.get('soLuong') and parsed_info.get('soLuong') != 'N/A' else 1.0
 
-                # Step 1: Compare tenThuoc only (>= 95%)
                 choices = df_full['tenThuoc'].dropna().tolist()
                 best_match, score, _ = process.extractOne(ten_thuoc, choices, scorer=fuzz.ratio) if ten_thuoc else (None, 0, None)
 
                 if best_match and score >= 95:
-                    # Direct match based on tenThuoc
                     drug_info_row = df_full[df_full['tenThuoc'] == best_match].iloc[0]
                     st.markdown(f"**Phương thức:** `Levenshtein Distance (Thuốc: {best_match}, độ tương đồng: {score:.0f}%)`")
                     gia_kk = drug_info_row['giaBanBuonDuKien'] * quantity
@@ -500,14 +467,12 @@ if df_full is not None:
                     total_gia_kk += gia_kk if pd.notna(gia_kk) else 0.0
                     total_gia_tt += gia_tt
                 else:
-                    # Step 2: Compare tenThuoc + hoatChat (>= 90%)
                     search_key = f"{ten_thuoc} {hoat_chat}".strip()
                     choices_combined = (df_full['tenThuoc'].fillna('') + ' ' + df_full['hoatChat'].fillna('')).str.strip().tolist()
                     best_match, score, idx = process.extractOne(search_key, choices_combined, scorer=fuzz.ratio) if search_key else (None, 0, None)
 
                     if best_match and score >= 90:
                         drug_info_row = df_full.iloc[idx]
-                        # Check if dosage differs for extrapolation
                         can_extrapolate = False
                         if pd.notna(parsed_info.get('hamLuong')) and pd.notna(drug_info_row.get('hamLuong')):
                             user_dosage_mg = parse_dosage_value(parsed_info.get('hamLuong'))
@@ -535,7 +500,6 @@ if df_full is not None:
                             total_gia_kk += gia_kk_extrapolated if pd.notna(gia_kk_base) else 0.0
                             total_gia_tt += gia_tt_extrapolated
                         else:
-                            # Direct match based on tenThuoc + hoatChat
                             st.markdown(f"**Phương thức:** `Levenshtein Distance (Thuốc: {drug_info_row['tenThuoc']}, độ tương đồng: {score:.0f}%)`")
                             gia_kk = drug_info_row['giaBanBuonDuKien'] * quantity
                             gia_tt = drug_info_row.get('giaThanh', np.nan) * quantity if pd.notna(drug_info_row.get('giaThanh')) else 0.0
@@ -551,7 +515,6 @@ if df_full is not None:
                             total_gia_kk += gia_kk if pd.notna(gia_kk) else 0.0
                             total_gia_tt += gia_tt
                     else:
-                        # Use CatBoost Regressor
                         st.markdown(f"**Phương thức:** `CatBoost Regressor`")
                         st.caption(f"Sử dụng thông tin bổ sung (nhà SX, nước SX, Dạng bào chế...) từ thuốc tương tự nhất: *{best_match or 'N/A'}*")
                         hybrid_data = {
